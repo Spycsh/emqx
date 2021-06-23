@@ -159,6 +159,8 @@
 
 -define(DEFAULT_BATCH_N, 1000).
 
+-define(MAX_EXPIRY_INTERVAL, 4294967295000). %% 16#FFFFFFFF * 1000
+
 -type options() :: #{ max_subscriptions => non_neg_integer()
                     , upgrade_qos => boolean()
                     , retry_interval => timeout()
@@ -181,6 +183,7 @@
 mnesia(boot) ->
     ok = ekka_mnesia:create_table(?SESSION_STORE, [
                 {type, set},
+                {rlog_shard, ?PERSISTENT_SESSION_SHARD},
                 {ram_copies, [node()]},
                 {record_name, session_store},
                 {attributes, record_info(fields, session_store)},
@@ -227,8 +230,13 @@ db_put(SessionID, ExpiryInterval, #session{} = Session) when is_binary(SessionID
                        , ts              = erlang:system_time(millisecond)
                        , session         = Session},
     case use_db_session(SS) of
-        false -> ekka_mnesia:dirty_delete(?SESSION_STORE, SessionID);
-        true  -> ekka_mnesia:dirty_write(?SESSION_STORE, SS)
+        false -> clean_up_session(SessionID, Session);
+        true  ->
+            %% TODO: Should check for changes in the subscriptions.
+            maps:foreach(fun(Topic, _) ->
+                                 emqx_session_router:do_add_route(Topic, SessionID)
+                         end, Session#session.subscriptions),
+            ekka_mnesia:dirty_write(?SESSION_STORE, SS)
     end.
 
 db_get(SessionID) when is_binary(SessionID) ->
@@ -244,10 +252,15 @@ db_get(SessionID) when is_binary(SessionID) ->
 %% @private [MQTT-3.1.2-23]
 use_db_session(#session_store{expiry_interval = 0}) ->
     false;
-use_db_session(#session_store{expiry_interval = 16#FFFFFFFF}) ->
+use_db_session(#session_store{expiry_interval = ?MAX_EXPIRY_INTERVAL}) ->
     true;
 use_db_session(#session_store{expiry_interval = E, ts = TS}) ->
-    E*1000 + TS > erlang:system_time(millisecond).
+    E + TS > erlang:system_time(millisecond).
+
+clean_up_session(SessionID, Session) ->
+    Fun = fun(Topic, _) -> emqx_session_router:do_delete_route(Topic, SessionID) end,
+    maps:foreach(Fun, Session#session.subscriptions),
+    ekka_mnesia:dirty_delete(?SESSION_STORE, SessionID).
 
 %%--------------------------------------------------------------------
 %% Info, Stats
@@ -337,6 +350,8 @@ unsubscribe(ClientInfo, TopicFilter, UnSubOpts, Session = #session{subscriptions
     case maps:find(TopicFilter, Subs) of
         {ok, SubOpts} ->
             ok = emqx_broker:unsubscribe(TopicFilter),
+            ClientID = maps:get(clientid, ClientInfo, undefined),
+            emqx_session_router:do_delete_route(ClientID, TopicFilter),
             ok = emqx_hooks:run('session.unsubscribed', [ClientInfo, TopicFilter, maps:merge(SubOpts, UnSubOpts)]),
             {ok, Session#session{subscriptions = maps:remove(TopicFilter, Subs)}};
         error ->
@@ -702,7 +717,8 @@ terminate(ClientInfo, discarded, Session) ->
     run_hook('session.discarded', [ClientInfo, info(Session)]);
 terminate(ClientInfo, takeovered, Session) ->
     run_hook('session.takeovered', [ClientInfo, info(Session)]);
-terminate(ClientInfo, Reason, Session) ->
+terminate(#{clientid := ClientId} = ClientInfo, Reason, Session) ->
+    clean_up_session(ClientId, Session),
     run_hook('session.terminated', [ClientInfo, Reason, info(Session)]).
 
 -compile({inline, [run_hook/2]}).
