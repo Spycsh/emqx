@@ -54,6 +54,15 @@
 -compile(nowarn_export_all).
 -endif.
 
+%% DB API
+-export([ mnesia/1
+        , db_get/1
+        , db_put/3
+        ]).
+
+-boot_mnesia({mnesia, [boot]}).
+-copy_mnesia({mnesia, [copy]}).
+
 -export([init/1]).
 
 -export([ info/1
@@ -160,6 +169,27 @@
                     }.
 
 %%--------------------------------------------------------------------
+%% Mnesia bootstrap
+%%--------------------------------------------------------------------
+
+-define(SESSION_STORE, emqx_session_store).
+-record(session_store, { id               :: binary()
+                       , expiry_interval  :: non_neg_integer()
+                       , ts               :: non_neg_integer()
+                       , session          :: #session{}}).
+
+mnesia(boot) ->
+    ok = ekka_mnesia:create_table(?SESSION_STORE, [
+                {type, set},
+                {ram_copies, [node()]},
+                {record_name, session_store},
+                {attributes, record_info(fields, session_store)},
+                {storage_properties, [{ets, [{read_concurrency, true}]}]}]);
+
+mnesia(copy) ->
+    ok = ekka_mnesia:copy_table(?SESSION_STORE, ram_copies).
+
+%%--------------------------------------------------------------------
 %% Init a Session
 %%--------------------------------------------------------------------
 
@@ -183,6 +213,41 @@ init(Opts) ->
        await_rel_timeout = maps:get(await_rel_timeout, Opts, 300000),
        created_at        = erlang:system_time(millisecond)
       }.
+
+%%--------------------------------------------------------------------
+%% DB API
+%%--------------------------------------------------------------------
+
+db_put(undefined,_ExpiryInterval, #session{}) ->
+    ok;
+db_put(SessionID, ExpiryInterval, #session{} = Session) when is_binary(SessionID),
+                                                             is_integer(ExpiryInterval) ->
+    SS = #session_store{ id              = SessionID
+                       , expiry_interval = ExpiryInterval
+                       , ts              = erlang:system_time(millisecond)
+                       , session         = Session},
+    case use_db_session(SS) of
+        false -> ekka_mnesia:dirty_delete(?SESSION_STORE, SessionID);
+        true  -> ekka_mnesia:dirty_write(?SESSION_STORE, SS)
+    end.
+
+db_get(SessionID) when is_binary(SessionID) ->
+    case mnesia:dirty_read(?SESSION_STORE, SessionID) of
+        [] -> [];
+        [#session_store{session = S} = SS] ->
+            case use_db_session(SS) of
+                true  -> [S];
+                false -> []
+            end
+    end.
+
+%% @private [MQTT-3.1.2-23]
+use_db_session(#session_store{expiry_interval = 0}) ->
+    false;
+use_db_session(#session_store{expiry_interval = 16#FFFFFFFF}) ->
+    true;
+use_db_session(#session_store{expiry_interval = E, ts = TS}) ->
+    E*1000 + TS > erlang:system_time(millisecond).
 
 %%--------------------------------------------------------------------
 %% Info, Stats
