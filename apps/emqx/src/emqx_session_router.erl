@@ -178,23 +178,29 @@ persist(Msg) ->
             case match_routes(emqx_message:topic(Msg)) of
                 [] -> ok;
                 Routes ->
+                    %% TODO: This should store in external backend
                     ekka_mnesia:dirty_write(?MSG_TAB, Msg),
-                    Fun = fun(Route) -> cast(pick(Route), {persist, Route, Msg}) end,
+                    MsgId = emqx_message:id(Msg),
+                    Fun = fun(#route{dest = SessionID}) ->
+                                  Key = {SessionID, MsgId, ?UNDELIVERED},
+                                  ekka_mnesia:dirty_write(?SESS_MSG_TAB, #session_msg{ key = Key })
+                          end,
                     lists:foreach(Fun, Routes)
             end
     end.
 
-delivered(SessionID, MsgIds) ->
-    cast(pick(SessionID), {delivered, SessionID, MsgIds}).
+delivered(SessionID, MsgIDs) ->
+    Fun = fun(MsgID) ->
+                  Key = {SessionID, MsgID, ?DELIVERED},
+                  ekka_mnesia:dirty_write(?SESS_MSG_TAB, #session_msg{ key = Key })
+          end,
+    lists:foreach(Fun, MsgIDs).
 
 pending(SessionID) ->
     call(pick(SessionID), {pending, SessionID}).
 
 call(Router, Msg) ->
     gen_server:call(Router, Msg, infinity).
-
-cast(Router, Msg) ->
-    gen_server:cast(Router, Msg).
 
 pick(#route{dest = SessionID}) ->
     gproc_pool:pick_worker(session_router_pool, SessionID);
@@ -215,17 +221,6 @@ handle_call(Req, _From, State) ->
     ?LOG(error, "Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
-handle_cast({persist, #route{dest = SessionID}, Msg}, State) ->
-    Key = {SessionID, emqx_message:id(Msg), ?UNDELIVERED},
-    ekka_mnesia:dirty_write(?SESS_MSG_TAB, #session_msg{ key = Key }),
-    {noreply, State};
-handle_cast({delivered, SessionID, MsgIDs}, State) ->
-    Fun = fun(MsgID) ->
-                  Key = {SessionID, MsgID, ?DELIVERED},
-                  ekka_mnesia:dirty_write(?SESS_MSG_TAB, #session_msg{ key = Key })
-          end,
-    lists:foreach(Fun, MsgIDs),
-    {noreply, State};
 handle_cast(Msg, State) ->
     ?LOG(error, "Unexpected cast: ~p", [Msg]),
     {noreply, State}.
