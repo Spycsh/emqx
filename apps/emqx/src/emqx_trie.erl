@@ -75,6 +75,7 @@ mnesia(boot) ->
                 {type, ordered_set},
                 {storage_properties, StoreProps}]),
     ok = ekka_mnesia:create_table(?SESSION_TRIE, [
+                {rlog_shard, ?ROUTE_SHARD},
                 {ram_copies, [node()]},
                 {record_name, ?TRIE},
                 {attributes, record_info(fields, ?TRIE)},
