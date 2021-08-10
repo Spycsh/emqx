@@ -229,9 +229,10 @@ db_put(SessionID, ExpiryInterval, #session{} = Session) when is_binary(SessionID
                        , expiry_interval = ExpiryInterval
                        , ts              = erlang:system_time(millisecond)
                        , session         = Session},
-    case use_db_session(SS) of
-        false -> clean_up_session(SessionID, Session);
-        true  ->
+    case persistent_session_status(SS) of
+        not_persistent -> ok;
+        expired        -> clean_up_session(SessionID, Session);
+        persistent ->
             %% TODO: Should check for changes in the subscriptions.
             maps:foreach(fun(Topic, _) ->
                                  emqx_session_router:do_add_route(Topic, SessionID)
@@ -243,19 +244,23 @@ db_get(SessionID) when is_binary(SessionID) ->
     case mnesia:dirty_read(?SESSION_STORE, SessionID) of
         [] -> [];
         [#session_store{session = S} = SS] ->
-            case use_db_session(SS) of
-                true  -> [S];
-                false -> []
+            case persistent_session_status(SS) of
+                not_persistent -> []; %% For completeness. Should not happen
+                expired        -> [];
+                persistent     -> [S]
             end
     end.
 
 %% @private [MQTT-3.1.2-23]
-use_db_session(#session_store{expiry_interval = 0}) ->
-    false;
-use_db_session(#session_store{expiry_interval = ?MAX_EXPIRY_INTERVAL}) ->
-    true;
-use_db_session(#session_store{expiry_interval = E, ts = TS}) ->
-    E + TS > erlang:system_time(millisecond).
+persistent_session_status(#session_store{expiry_interval = 0}) ->
+    not_persistent;
+persistent_session_status(#session_store{expiry_interval = ?MAX_EXPIRY_INTERVAL}) ->
+    persistent;
+persistent_session_status(#session_store{expiry_interval = E, ts = TS}) ->
+    case E + TS > erlang:system_time(millisecond) of
+        true  -> persistent;
+        false -> expired
+    end.
 
 clean_up_session(SessionID, Session) ->
     Fun = fun(Topic, _) -> emqx_session_router:do_delete_route(Topic, SessionID) end,

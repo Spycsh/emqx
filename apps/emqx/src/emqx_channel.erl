@@ -740,10 +740,21 @@ process_disconnect(ReasonCode, Properties, Channel) ->
     {ok, {close, disconnect_reason(ReasonCode)}, NChannel}.
 
 maybe_update_expiry_interval(#{'Session-Expiry-Interval' := Interval},
-                             Channel = #channel{conninfo = ConnInfo}) ->
-    NChannel = Channel#channel{conninfo = ConnInfo#{expiry_interval => timer:seconds(Interval)}},
-    %% We need to update the expiry interval on the session as well
-    set_session(NChannel#channel.session, NChannel);
+                             Channel = #channel{conninfo = ConnInfo, clientinfo = ClientInfo}) ->
+    EI = timer:seconds(Interval),
+    OLdEI = maps:get(expiry_interval, ConnInfo, 0),
+    case OLdEI =:= EI of
+        true -> Channel;
+        false ->
+            NChannel = Channel#channel{conninfo = ConnInfo#{expiry_interval => EI}},
+            ClientID = maps:get(clientid, ClientInfo, undefined),
+            %% Check if the client turns off persistence
+            case EI =:= 0 andalso OLdEI > 0 of
+                true  -> emqx_session:clean_up_session(ClientID, NChannel#channel.session);
+                false -> emqx_session:db_put(ClientID, EI, NChannel#channel.session)
+            end,
+            NChannel
+    end;
 maybe_update_expiry_interval(_Properties, Channel) -> Channel.
 
 %%--------------------------------------------------------------------
