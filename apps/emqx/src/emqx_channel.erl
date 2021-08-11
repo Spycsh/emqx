@@ -33,8 +33,6 @@
         , get_mqtt_conf/2
         , get_mqtt_conf/3
         , set_conn_state/2
-        , get_session/1
-        , set_session/2
         , stats/1
         , caps/1
         ]).
@@ -179,9 +177,6 @@ info(timers, #channel{timers = Timers}) -> Timers.
 
 set_conn_state(ConnState, Channel) ->
     Channel#channel{conn_state = ConnState}.
-
-get_session(#channel{session = Session}) ->
-    Session.
 
 set_session(Session, Channel) ->
     %% Assume that this is also an updated session. Allow side effect.
