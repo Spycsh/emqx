@@ -187,7 +187,11 @@ set_session(Session, Channel = #channel{clientinfo = ClientInfo, conninfo = Conn
     %% Assume that this is also an updated session. Allow side effect.
     ClientID = maps:get(clientid, ClientInfo, undefined),
     ExpiryInterval = maps:get(expiry_interval, ConnInfo, 0),
-    emqx_session:db_put(ClientID, ExpiryInterval, Session),
+    TS = case maps:get(disconnected_at, ConnInfo, undefined) of
+             undefined  -> erlang:system_time(millisecond);
+             Disconnect -> Disconnect
+         end,
+    emqx_session:db_put(ClientID, ExpiryInterval, TS, Session),
     Channel#channel{session = Session}.
 
 %% TODO: Add more stats.

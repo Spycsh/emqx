@@ -225,11 +225,12 @@ open_session(true, ClientInfo = #{clientid := ClientId}, ConnInfo) ->
 open_session(false, ClientInfo = #{clientid := ClientId}, ConnInfo) ->
     EI = maps:get(expiry_interval, ConnInfo, 0),
     Self = self(),
+    TS = erlang:system_time(millisecond),
     ResumeStart = fun(_) ->
                       case takeover_session(ClientId) of
                           {ok, Session} ->
                               ok = emqx_session:resume(ClientInfo, Session),
-                              emqx_session:db_put(ClientId, EI, Session),
+                              emqx_session:db_put(ClientId, EI, TS, Session),
                               Pendings = [{deliver, emqx_message:topic(Msg), Msg}
                                           || Msg <- emqx_session_router:pending(ClientId)],
                               register_channel(ClientId, Self, ConnInfo),
@@ -238,7 +239,7 @@ open_session(false, ClientInfo = #{clientid := ClientId}, ConnInfo) ->
                                      pendings => Pendings}};
                           {ok, ConnMod, ChanPid, Session} ->
                               ok = emqx_session:resume(ClientInfo, Session),
-                              emqx_session:db_put(ClientId, EI, Session),
+                              emqx_session:db_put(ClientId, EI, TS, Session),
                               Pendings = ConnMod:call(ChanPid, {takeover, 'end'}, ?T_TAKEOVER),
                               register_channel(ClientId, Self, ConnInfo),
                               {ok, #{session  => Session,
@@ -246,7 +247,7 @@ open_session(false, ClientInfo = #{clientid := ClientId}, ConnInfo) ->
                                      pendings => Pendings}};
                           {error, not_found} ->
                               Session = create_session(ClientInfo, ConnInfo),
-                              emqx_session:db_put(ClientId, EI, Session),
+                              emqx_session:db_put(ClientId, EI, TS, Session),
                               register_channel(ClientId, Self, ConnInfo),
                               {ok, #{session => Session, present => false}}
                       end

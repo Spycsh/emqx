@@ -57,7 +57,7 @@
 %% DB API
 -export([ mnesia/1
         , db_get/1
-        , db_put/3
+        , db_put/4
         ]).
 
 -boot_mnesia({mnesia, [boot]}).
@@ -221,13 +221,16 @@ init(Opts) ->
 %% DB API
 %%--------------------------------------------------------------------
 
-db_put(undefined,_ExpiryInterval, #session{}) ->
+%% The timestamp (TS) is the last time a client interacted with the session,
+%% or when the client disconnected.
+-spec db_put(binary() | 'undefined', non_neg_integer(), non_neg_integer(), #session{}) -> 'ok'.
+db_put(undefined,_ExpiryInterval,_TS, #session{}) ->
     ok;
-db_put(SessionID, ExpiryInterval, #session{} = Session) when is_binary(SessionID),
-                                                             is_integer(ExpiryInterval) ->
+db_put(SessionID, ExpiryInterval, TS, #session{} = Session) when is_binary(SessionID),
+                                                                 is_integer(ExpiryInterval) ->
     SS = #session_store{ id              = SessionID
                        , expiry_interval = ExpiryInterval
-                       , ts              = erlang:system_time(millisecond)
+                       , ts              = TS
                        , session         = Session},
     case persistent_session_status(SS) of
         not_persistent -> ok;
