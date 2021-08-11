@@ -58,6 +58,8 @@
 -export([ mnesia/1
         , db_get/1
         , db_put/4
+        , enable_persistent/2
+        , discard_persistent/2
         ]).
 
 -boot_mnesia({mnesia, [boot]}).
@@ -70,8 +72,8 @@
         , stats/1
         ]).
 
--export([ subscribe/4
-        , unsubscribe/4
+-export([ subscribe/5,
+          unsubscribe/4
         ]).
 
 -export([ publish/3
@@ -234,13 +236,8 @@ db_put(SessionID, ExpiryInterval, TS, #session{} = Session) when is_binary(Sessi
                        , session         = Session},
     case persistent_session_status(SS) of
         not_persistent -> ok;
-        expired        -> clean_up_session(SessionID, Session);
-        persistent ->
-            %% TODO: Should check for changes in the subscriptions.
-            maps:foreach(fun(Topic, _) ->
-                                 emqx_session_router:do_add_route(Topic, SessionID)
-                         end, Session#session.subscriptions),
-            ekka_mnesia:dirty_write(?SESSION_STORE, SS)
+        expired        -> discard_persistent(SessionID, Session);
+        persistent     -> ekka_mnesia:dirty_write(?SESSION_STORE, SS)
     end.
 
 db_get(SessionID) when is_binary(SessionID) ->
@@ -265,10 +262,14 @@ persistent_session_status(#session_store{expiry_interval = E, ts = TS}) ->
         false -> expired
     end.
 
-clean_up_session(SessionID, Session) ->
+discard_persistent(SessionID, Session) ->
     Fun = fun(Topic, _) -> emqx_session_router:do_delete_route(Topic, SessionID) end,
     maps:foreach(Fun, Session#session.subscriptions),
     ekka_mnesia:dirty_delete(?SESSION_STORE, SessionID).
+
+enable_persistent(SessionID, Session) ->
+    Fun = fun(Topic, _) -> emqx_session_router:do_add_route(Topic, SessionID) end,
+    maps:foreach(Fun, Session#session.subscriptions).
 
 %%--------------------------------------------------------------------
 %% Info, Stats
@@ -327,14 +328,16 @@ stats(Session) -> info(?STATS_KEYS, Session).
 %%--------------------------------------------------------------------
 
 -spec(subscribe(emqx_types:clientinfo(), emqx_types:topic(),
-                emqx_types:subopts(), session())
+                emqx_types:subopts(), session(), ExpiryInterval :: non_neg_integer())
       -> {ok, session()} | {error, emqx_types:reason_code()}).
 subscribe(ClientInfo = #{clientid := ClientId}, TopicFilter, SubOpts,
-          Session = #session{subscriptions = Subs}) ->
+          Session = #session{subscriptions = Subs}, ExpiryInterval) ->
     IsNew = not maps:is_key(TopicFilter, Subs),
     case IsNew andalso is_subscriptions_full(Session) of
         false ->
             ok = emqx_broker:subscribe(TopicFilter, ClientId, SubOpts),
+            [emqx_session_router:do_add_route(TopicFilter, ClientId)
+             || ExpiryInterval > 0, ClientId /= undefined],
             ok = emqx_hooks:run('session.subscribed',
                                 [ClientInfo, TopicFilter, SubOpts#{is_new => IsNew}]),
             {ok, Session#session{subscriptions = maps:put(TopicFilter, SubOpts, Subs)}};
@@ -725,8 +728,8 @@ terminate(ClientInfo, discarded, Session) ->
     run_hook('session.discarded', [ClientInfo, info(Session)]);
 terminate(ClientInfo, takeovered, Session) ->
     run_hook('session.takeovered', [ClientInfo, info(Session)]);
-terminate(#{clientid := ClientId} = ClientInfo, Reason, Session) ->
-    clean_up_session(ClientId, Session),
+terminate(#{clientid :=_ClientId} = ClientInfo, Reason, Session) ->
+    %% TODO: Clean up session?
     run_hook('session.terminated', [ClientInfo, Reason, info(Session)]).
 
 -compile({inline, [run_hook/2]}).

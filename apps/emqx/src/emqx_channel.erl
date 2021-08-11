@@ -183,16 +183,26 @@ set_conn_state(ConnState, Channel) ->
 get_session(#channel{session = Session}) ->
     Session.
 
-set_session(Session, Channel = #channel{clientinfo = ClientInfo, conninfo = ConnInfo}) ->
+set_session(Session, Channel) ->
     %% Assume that this is also an updated session. Allow side effect.
-    ClientID = maps:get(clientid, ClientInfo, undefined),
-    ExpiryInterval = maps:get(expiry_interval, ConnInfo, 0),
-    TS = case maps:get(disconnected_at, ConnInfo, undefined) of
-             undefined  -> erlang:system_time(millisecond);
-             Disconnect -> Disconnect
-         end,
-    emqx_session:db_put(ClientID, ExpiryInterval, TS, Session),
-    Channel#channel{session = Session}.
+    NChannel = Channel#channel{session = Session},
+    maybe_persist_session(NChannel).
+
+maybe_persist_session(Channel = #channel{conninfo = ConnInfo}) ->
+    case maps:get(clientid, Channel#channel.clientinfo, undefined) of
+        undefined -> Channel;
+        ClientID ->
+            case maps:get(expiry_interval, ConnInfo, 0) of
+                0  -> Channel;
+                EI ->
+                    TS = case maps:get(disconnected_at, ConnInfo, undefined) of
+                             undefined  -> erlang:system_time(millisecond);
+                             Disconnect -> Disconnect
+                         end,
+                    emqx_session:db_put(ClientID, EI, TS, Channel#channel.session),
+                    Channel
+            end
+    end.
 
 %% TODO: Add more stats.
 -spec(stats(channel()) -> emqx_types:stats()).
@@ -687,10 +697,11 @@ process_subscribe([Topic = {TopicFilter, SubOpts}|More], SubProps, Channel, Acc)
 
 do_subscribe(TopicFilter, SubOpts = #{qos := QoS}, Channel =
              #channel{clientinfo = ClientInfo = #{mountpoint := MountPoint},
+                      conninfo = #{expiry_interval := EI},
                       session = Session}) ->
     NTopicFilter = emqx_mountpoint:mount(MountPoint, TopicFilter),
     NSubOpts = enrich_subopts(maps:merge(?DEFAULT_SUBOPTS, SubOpts), Channel),
-    case emqx_session:subscribe(ClientInfo, NTopicFilter, NSubOpts, Session) of
+    case emqx_session:subscribe(ClientInfo, NTopicFilter, NSubOpts, Session, EI) of
         {ok, NSession} ->
             {QoS, set_session(NSession, Channel)};
         {error, RC} ->
@@ -752,12 +763,16 @@ maybe_update_expiry_interval(#{'Session-Expiry-Interval' := Interval},
         false ->
             NChannel = Channel#channel{conninfo = ConnInfo#{expiry_interval => EI}},
             ClientID = maps:get(clientid, ClientInfo, undefined),
-            %% Check if the client turns off persistence
-            case EI =:= 0 andalso OLdEI > 0 of
-                true  -> emqx_session:clean_up_session(ClientID, NChannel#channel.session);
-                false -> emqx_session:db_put(ClientID, EI, NChannel#channel.session)
+            %% Check if the client turns on/off persistence
+            if
+                EI =:= 0, OLdEI >   0 ->
+                    emqx_session:discard_persistent(ClientID, NChannel#channel.session);
+                EI > 0,   OLdEI =:= 0 ->
+                    emqx_session:enable_persistent(ClientID, NChannel#channel.session);
+                true ->
+                    skip
             end,
-            NChannel
+            maybe_persist_session(NChannel)
     end;
 maybe_update_expiry_interval(_Properties, Channel) -> Channel.
 

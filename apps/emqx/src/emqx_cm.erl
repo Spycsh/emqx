@@ -213,10 +213,11 @@ set_chan_stats(ClientId, ChanPid, Stats) ->
 open_session(true, ClientInfo = #{clientid := ClientId}, ConnInfo) ->
     EI = maps:get(expiry_interval, ConnInfo, 0),
     Self = self(),
+    TS = erlang:system_time(millisecond),
     CleanStart = fun(_) ->
                      ok = discard_session(ClientId),
                      Session = create_session(ClientInfo, ConnInfo),
-                     emqx_session:db_put(ClientId, EI, Session),
+                     emqx_session:db_put(ClientId, EI, TS, Session),
                      register_channel(ClientId, Self, ConnInfo),
                      {ok, #{session => Session, present => false}}
                  end,

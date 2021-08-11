@@ -846,6 +846,7 @@ do_subscribe({TopicId, TopicName, QoS},
              Channel = #channel{
                           ctx = Ctx,
                           session = Session,
+                          conninfo = #{expiry_interval := EI},
                           clientinfo = ClientInfo
                                      = #{mountpoint := Mountpoint}}) ->
 
@@ -860,7 +861,7 @@ do_subscribe({TopicId, TopicName, QoS},
         [{NTopicName, NSubOpts}|_] ->
             NTopicName1 = emqx_mountpoint:mount(Mountpoint, NTopicName),
             NSubOpts1 = maps:merge(?DEFAULT_SUBOPTS, NSubOpts),
-            case emqx_session:subscribe(ClientInfo, NTopicName1, NSubOpts1, Session) of
+            case emqx_session:subscribe(ClientInfo, NTopicName1, NSubOpts1, Session, EI) of
                 {ok, NSession} ->
                     {ok, {TopicId, QoS},
                      Channel#channel{session = NSession}};
