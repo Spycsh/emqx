@@ -39,7 +39,7 @@
 
 -export([ persist/1
         , delivered/2
-        , pending/1
+        , pending/2
         ]).
 
 -export([print_routes/1]).
@@ -196,8 +196,8 @@ delivered(SessionID, MsgIDs) ->
           end,
     lists:foreach(Fun, MsgIDs).
 
-pending(SessionID) ->
-    call(pick(SessionID), {pending, SessionID}).
+pending(SessionID, EarliestTS) ->
+    call(pick(SessionID), {pending, SessionID, EarliestTS}).
 
 call(Router, Msg) ->
     gen_server:call(Router, Msg, infinity).
@@ -215,8 +215,8 @@ init([Pool, Id]) ->
     true = gproc_pool:connect_worker(Pool, {Pool, Id}),
     {ok, #{pool => Pool, id => Id}}.
 
-handle_call({pending, SessionID}, _From, State) ->
-    {reply, pending_messages(SessionID), State};
+handle_call({pending, SessionID, EarliestTS}, _From, State) ->
+    {reply, pending_messages(SessionID, EarliestTS), State};
 handle_call(Req, _From, State) ->
     ?LOG(error, "Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
@@ -242,10 +242,13 @@ code_change(_OldVsn, State, _Extra) ->
 lookup_routes(Topic) ->
     ets:lookup(?ROUTE_TAB, Topic).
 
-pending_messages(SessionID) ->
+pending_messages(SessionID, EarliestMS) ->
     %% TODO: The reading of messages should be from external DB
+    %% Session create time is in msec and the message ids use microsecs.
+    %% To ensure clean starts, we bump to next msec.
+    SmallestMsgID = << ((EarliestMS + 1) * 1000):64, (1 bsl 64 - 1):64>>,
     Fun = fun() -> [hd(mnesia:read(?MSG_TAB, MsgId))
-                    || MsgId <- pending_messages(SessionID, <<>>, ?DELIVERED, [])]
+                    || MsgId <- pending_messages(SessionID, SmallestMsgID, ?DELIVERED, [])]
           end,
     {atomic, Msgs} = ekka_mnesia:ro_transaction(?PERSISTENT_SESSION_SHARD, Fun),
     Msgs.

@@ -60,6 +60,7 @@
         , persist/4
         , enable_persistent/2
         , discard_persistent/2
+        , clean_start_persistent/1
         ]).
 
 -boot_mnesia({mnesia, [boot]}).
@@ -260,6 +261,12 @@ persistent_session_status(#session_store{expiry_interval = E, ts = TS}) ->
     case E + TS > erlang:system_time(millisecond) of
         true  -> persistent;
         false -> expired
+    end.
+
+clean_start_persistent(SessionID) ->
+    case get_persistent(SessionID) of
+        [] -> ok;
+        [Session] -> discard_persistent(SessionID, Session)
     end.
 
 discard_persistent(SessionID, Session) ->
