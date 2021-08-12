@@ -729,7 +729,6 @@ terminate(ClientInfo, discarded, Session) ->
 terminate(ClientInfo, takeovered, Session) ->
     run_hook('session.takeovered', [ClientInfo, info(Session)]);
 terminate(#{clientid :=_ClientId} = ClientInfo, Reason, Session) ->
-    %% TODO: Clean up session?
     run_hook('session.terminated', [ClientInfo, Reason, info(Session)]).
 
 -compile({inline, [run_hook/2]}).

@@ -1177,9 +1177,11 @@ terminate(normal, Channel) ->
     run_terminate_hook(normal, Channel);
 terminate({shutdown, Reason}, Channel)
   when Reason =:= kicked; Reason =:= discarded; Reason =:= takeovered ->
+    [maybe_persist_session(Channel) || Reason =:= kicked],
     run_terminate_hook(Reason, Channel);
 terminate(Reason, Channel = #channel{will_msg = WillMsg}) ->
     (WillMsg =/= undefined) andalso publish_will_msg(WillMsg),
+    maybe_persist_session(Channel),
     run_terminate_hook(Reason, Channel).
 
 run_terminate_hook(_Reason, #channel{session = undefined}) -> ok;
