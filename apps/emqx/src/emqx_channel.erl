@@ -194,7 +194,7 @@ maybe_persist_session(Channel = #channel{conninfo = ConnInfo}) ->
                              undefined  -> erlang:system_time(millisecond);
                              Disconnect -> Disconnect
                          end,
-                    emqx_session:db_put(ClientID, EI, TS, Channel#channel.session),
+                    emqx_session:persist(ClientID, EI, TS, Channel#channel.session),
                     Channel
             end
     end.

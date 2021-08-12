@@ -217,7 +217,7 @@ open_session(true, ClientInfo = #{clientid := ClientId}, ConnInfo) ->
     CleanStart = fun(_) ->
                      ok = discard_session(ClientId),
                      Session = create_session(ClientInfo, ConnInfo),
-                     emqx_session:db_put(ClientId, EI, TS, Session),
+                     emqx_session:persist(ClientId, EI, TS, Session),
                      register_channel(ClientId, Self, ConnInfo),
                      {ok, #{session => Session, present => false}}
                  end,
@@ -231,7 +231,7 @@ open_session(false, ClientInfo = #{clientid := ClientId}, ConnInfo) ->
                       case takeover_session(ClientId) of
                           {ok, Session} ->
                               ok = emqx_session:resume(ClientInfo, Session),
-                              emqx_session:db_put(ClientId, EI, TS, Session),
+                              emqx_session:persist(ClientId, EI, TS, Session),
                               Pendings = [{deliver, emqx_message:topic(Msg), Msg}
                                           || Msg <- emqx_session_router:pending(ClientId)],
                               register_channel(ClientId, Self, ConnInfo),
@@ -240,7 +240,7 @@ open_session(false, ClientInfo = #{clientid := ClientId}, ConnInfo) ->
                                      pendings => Pendings}};
                           {ok, ConnMod, ChanPid, Session} ->
                               ok = emqx_session:resume(ClientInfo, Session),
-                              emqx_session:db_put(ClientId, EI, TS, Session),
+                              emqx_session:persist(ClientId, EI, TS, Session),
                               Pendings = ConnMod:call(ChanPid, {takeover, 'end'}, ?T_TAKEOVER),
                               register_channel(ClientId, Self, ConnInfo),
                               {ok, #{session  => Session,
@@ -248,7 +248,7 @@ open_session(false, ClientInfo = #{clientid := ClientId}, ConnInfo) ->
                                      pendings => Pendings}};
                           {error, not_found} ->
                               Session = create_session(ClientInfo, ConnInfo),
-                              emqx_session:db_put(ClientId, EI, TS, Session),
+                              emqx_session:persist(ClientId, EI, TS, Session),
                               register_channel(ClientId, Self, ConnInfo),
                               {ok, #{session => Session, present => false}}
                       end
@@ -288,7 +288,7 @@ get_mqtt_conf(Zone, Key) ->
 takeover_session(ClientId) ->
     case lookup_channels(ClientId) of
         [] ->
-            case emqx_session:db_get(ClientId) of
+            case emqx_session:get_persistent(ClientId) of
                 [] -> {error, not_found};
                 [Session] -> {ok, Session}
             end;
@@ -306,7 +306,7 @@ takeover_session(ClientId) ->
 takeover_session(ClientId, ChanPid) when node(ChanPid) == node() ->
     case get_chann_conn_mod(ClientId, ChanPid) of
         undefined ->
-            case emqx_session:db_get(ClientId) of
+            case emqx_session:get_persistent(ClientId) of
                 [] -> {error, not_found};
                 [Session] -> {ok, Session}
             end;

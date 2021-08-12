@@ -56,8 +56,8 @@
 
 %% DB API
 -export([ mnesia/1
-        , db_get/1
-        , db_put/4
+        , get_persistent/1
+        , persist/4
         , enable_persistent/2
         , discard_persistent/2
         ]).
@@ -225,11 +225,11 @@ init(Opts) ->
 
 %% The timestamp (TS) is the last time a client interacted with the session,
 %% or when the client disconnected.
--spec db_put(binary() | 'undefined', non_neg_integer(), non_neg_integer(), #session{}) -> 'ok'.
-db_put(undefined,_ExpiryInterval,_TS, #session{}) ->
+-spec persist(binary() | 'undefined', non_neg_integer(), non_neg_integer(), #session{}) -> 'ok'.
+persist(undefined,_ExpiryInterval,_TS, #session{}) ->
     ok;
-db_put(SessionID, ExpiryInterval, TS, #session{} = Session) when is_binary(SessionID),
-                                                                 is_integer(ExpiryInterval) ->
+persist(SessionID, ExpiryInterval, TS, #session{} = Session) when is_binary(SessionID),
+                                                                  is_integer(ExpiryInterval) ->
     SS = #session_store{ id              = SessionID
                        , expiry_interval = ExpiryInterval
                        , ts              = TS
@@ -240,7 +240,7 @@ db_put(SessionID, ExpiryInterval, TS, #session{} = Session) when is_binary(Sessi
         persistent     -> ekka_mnesia:dirty_write(?SESSION_STORE, SS)
     end.
 
-db_get(SessionID) when is_binary(SessionID) ->
+get_persistent(SessionID) when is_binary(SessionID) ->
     case mnesia:dirty_read(?SESSION_STORE, SessionID) of
         [] -> [];
         [#session_store{session = S} = SS] ->
