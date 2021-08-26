@@ -232,6 +232,35 @@ t_cancel_on_disconnect(Config) ->
     ?assertEqual(0, client_info(session_present, Client2)),
     ok = emqtt:disconnect(Client2).
 
+t_persist_on_disconnect(Config) ->
+    %% Open a non-persistent session, but add the persistence when
+    %% shutting down the connection. This is a protocol error, and
+    %% should not convert the session into a persistent session.
+    ConnFun = ?config(conn_fun, Config),
+    ClientId = <<"t_persist_on_disconnect">>,
+
+    {ok, Client1} = emqtt:start_link([ {proto_ver, v5},
+                                       {clientid, ClientId},
+                                       {properties, #{'Session-Expiry-Interval' => 0}},
+                                       {clean_start, true}
+                                     | Config]),
+    {ok, _} = emqtt:ConnFun(Client1),
+
+    %% Strangely enough, the disconnect is reported as successful by emqtt.
+    ok = emqtt:disconnect(Client1, 0, #{'Session-Expiry-Interval' => 16#FFFFFFFF}),
+
+    {ok, Client2} = emqtt:start_link([ {clientid, ClientId},
+                                       {proto_ver, v5},
+                                       {clean_start, false},
+                                       {properties, #{'Session-Expiry-Interval' => 16#FFFFFFFF}}
+                                     | Config]),
+    {ok, _} = emqtt:ConnFun(Client2),
+    %% The session should not be known, since it wasn't persisted because of the
+    %% changed expiry interval in the disconnect call.
+    ?assertEqual(0, client_info(session_present, Client2)),
+    ok = emqtt:disconnect(Client2).
+
+
 t_process_dies_session_expires(Config) ->
     %% Emulate an error in the connect process,
     %% or that the node of the process goes down.
