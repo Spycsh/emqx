@@ -37,9 +37,10 @@
         , match_routes/1
         ]).
 
--export([ persist/1
+-export([ abandon/1
         , delivered/2
-        , pending/2
+        , persist/1
+        , pending/1
         ]).
 
 -export([print_routes/1]).
@@ -61,7 +62,8 @@
 -define(SESS_MSG_TAB, emqx_session_msg).
 -define(MSG_TAB, emqx_persistent_msg).
 
-%% NOTE: It is important that ?DELIVERED > ?UNDELIVERED because of traversal order
+%% NOTE: It is important that ?ABANDONED > ?DELIVERED > ?UNDELIVERED because of traversal order
+-define(ABANDONED, 2).
 -define(DELIVERED, 1).
 -define(UNDELIVERED, 0).
 -type pending_tag() :: ?DELIVERED | ?UNDELIVERED.
@@ -196,11 +198,19 @@ delivered(SessionID, MsgIDs) ->
           end,
     lists:foreach(Fun, MsgIDs).
 
-pending(SessionID, EarliestTS) ->
-    call(pick(SessionID), {pending, SessionID, EarliestTS}).
+abandon(Session) ->
+    SessionID = emqx_session:info(id, Session),
+    Subscriptions = emqx_session:info(subscriptions, Session),
+    cast(pick(SessionID), {abandon, SessionID, Subscriptions}).
+
+pending(SessionID) ->
+    call(pick(SessionID), {pending, SessionID}).
 
 call(Router, Msg) ->
     gen_server:call(Router, Msg, infinity).
+
+cast(Router, Msg) ->
+    gen_server:cast(Router, Msg).
 
 pick(#route{dest = SessionID}) ->
     gproc_pool:pick_worker(session_router_pool, SessionID);
@@ -215,12 +225,19 @@ init([Pool, Id]) ->
     true = gproc_pool:connect_worker(Pool, {Pool, Id}),
     {ok, #{pool => Pool, id => Id}}.
 
-handle_call({pending, SessionID, EarliestTS}, _From, State) ->
-    {reply, pending_messages(SessionID, EarliestTS), State};
+handle_call({pending, SessionID}, _From, State) ->
+    {reply, pending_messages(SessionID), State};
 handle_call(Req, _From, State) ->
     ?LOG(error, "Unexpected call: ~p", [Req]),
     {reply, ignored, State}.
 
+handle_cast({abandon, SessionID, Subscriptions}, State) ->
+    Key = {SessionID, <<>>, ?ABANDONED},
+    ekka_mnesia:dirty_write(?SESS_MSG_TAB, #session_msg{ key = Key }),
+    %% TODO: Make a batch for deleting all routes.
+    Fun = fun(Topic, _) -> do_delete_route(Topic, SessionID) end,
+    ok = maps:foreach(Fun, Subscriptions),
+    {noreply, State};
 handle_cast(Msg, State) ->
     ?LOG(error, "Unexpected cast: ~p", [Msg]),
     {noreply, State}.
@@ -242,20 +259,21 @@ code_change(_OldVsn, State, _Extra) ->
 lookup_routes(Topic) ->
     ets:lookup(?ROUTE_TAB, Topic).
 
-pending_messages(SessionID, EarliestMS) ->
+pending_messages(SessionID) ->
     %% TODO: The reading of messages should be from external DB
-    %% Session create time is in msec and the message ids use microsecs.
-    %% To ensure clean starts, we bump to next msec.
-    SmallestMsgID = << ((EarliestMS + 1) * 1000):64, (1 bsl 64 - 1):64>>,
-    Fun = fun() -> [hd(mnesia:read(?MSG_TAB, MsgId))
-                    || MsgId <- pending_messages(SessionID, SmallestMsgID, ?DELIVERED, [])]
+    Fun = fun() ->
+                  Pending = pending_messages(SessionID, <<>>, ?DELIVERED, []),
+                  [hd(mnesia:read(?MSG_TAB, MsgId))
+                    || MsgId <- Pending]
           end,
     {atomic, Msgs} = ekka_mnesia:ro_transaction(?PERSISTENT_SESSION_SHARD, Fun),
     Msgs.
 
 %% The keys are ordered by
+%%     {sessionID(), <<>>, ?ABANDONED} For abandoned sessions (clean started or expired).
 %%     {sessionID(), emqx_guid:guid(), ?DELIVERED | ?UNDELIVERED}
 %%  where
+%%     <<>> < emqx_guid:guid()
 %%     emqx_guid:guid() is ordered in ts() and by node()
 %%     ?UNDELIVERED < ?DELIVERED
 %%
@@ -263,6 +281,8 @@ pending_messages(SessionID, EarliestMS) ->
 %% TODO: Garbage collect the delivered messages.
 pending_messages(SessionID, PrevMsgId, PrevTag, Acc) ->
     case mnesia:dirty_next(?SESS_MSG_TAB, {SessionID, PrevMsgId, PrevTag}) of
+        {S, <<>>, ?ABANDONED} when S =:= SessionID ->
+            [];
         {S, MsgId, Tag} = Key when S =:= SessionID, MsgId =:= PrevMsgId ->
             Tag =:= ?UNDELIVERED andalso error({assert_fail}, Key),
             pending_messages(SessionID, MsgId, Tag, Acc);
@@ -271,7 +291,7 @@ pending_messages(SessionID, PrevMsgId, PrevTag, Acc) ->
                 ?DELIVERED   -> pending_messages(SessionID, MsgId, Tag, Acc);
                 ?UNDELIVERED -> pending_messages(SessionID, MsgId, Tag, [PrevMsgId|Acc])
             end;
-        _ -> %% Next sessionID or '$end_of_table'
+        _What -> %% Next sessionID or '$end_of_table'
             case PrevTag of
                 ?DELIVERED   -> lists:reverse(Acc);
                 ?UNDELIVERED -> lists:reverse([PrevMsgId|Acc])

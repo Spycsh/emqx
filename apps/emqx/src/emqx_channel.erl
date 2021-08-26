@@ -763,7 +763,7 @@ maybe_update_expiry_interval(#{'Session-Expiry-Interval' := Interval},
                 EI =:= 0, OldEI >   0 ->
                     emqx_session:discard_persistent(ClientID, NChannel#channel.session);
                 EI > 0,   OldEI =:= 0 ->
-                    emqx_session:enable_persistent(ClientID, NChannel#channel.session);
+                    emqx_session:enable_persistent(NChannel#channel.session);
                 true ->
                     skip
             end,
@@ -786,7 +786,8 @@ handle_deliver(Delivers, Channel = #channel{conn_state = disconnected,
     NChannel = set_session(NSession, Channel),
     %% We consider queued/dropped messages as delivered since they are now in the session state.
     MsgIds = [emqx_message:id(Msg) || {deliver, _, Msg} <- Delivers],
-    emqx_session_router:delivered(ClientId, MsgIds),
+    SessionID = emqx_session:info(id, Session),
+    emqx_session_router:delivered(SessionID, MsgIds),
     {ok, NChannel};
 
 handle_deliver(Delivers, Channel = #channel{takeover = true,
@@ -806,7 +807,8 @@ handle_deliver(Delivers, Channel = #channel{session = Session,
             case ExpiryInterval > 0 of
                 true ->
                     MsgIds = [emqx_message:id(Msg) || {deliver, _, Msg} <- Delivers],
-                    emqx_session_router:delivered(ClientId, MsgIds);
+                    SessionID = emqx_session:info(id, NSession),
+                    emqx_session_router:delivered(SessionID, MsgIds);
                 false ->
                     ignore
             end,

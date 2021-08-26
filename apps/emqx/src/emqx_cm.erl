@@ -216,7 +216,7 @@ open_session(true, ClientInfo = #{clientid := ClientId}, ConnInfo) ->
     TS = erlang:system_time(millisecond),
     CleanStart = fun(_) ->
                      ok = discard_session(ClientId),
-                     ok = emqx_session:clean_start_persistent(ClientId),
+                     ok = emqx_session:discard_persistent(ClientId),
                      Session = create_session(ClientInfo, ConnInfo),
                      emqx_session:persist(ClientId, EI, TS, Session),
                      register_channel(ClientId, Self, ConnInfo),
@@ -231,12 +231,11 @@ open_session(false, ClientInfo = #{clientid := ClientId}, ConnInfo) ->
     ResumeStart = fun(_) ->
                       case takeover_session(ClientId) of
                           {ok, Session} ->
+                              SessionID = emqx_session:info(id, Session),
                               ok = emqx_session:resume(ClientInfo, Session),
                               emqx_session:persist(ClientId, EI, TS, Session),
-                              %% Respect clean start timestamp
-                              CreatedAt = emqx_session:info(created_at, Session),
                               Pendings = [{deliver, emqx_message:topic(Msg), Msg}
-                                          || Msg <- emqx_session_router:pending(ClientId, CreatedAt)],
+                                          || Msg <- emqx_session_router:pending(SessionID)],
                               register_channel(ClientId, Self, ConnInfo),
                               {ok, #{session  => Session,
                                      present  => true,
