@@ -752,17 +752,17 @@ process_disconnect(ReasonCode, Properties, Channel) ->
 maybe_update_expiry_interval(#{'Session-Expiry-Interval' := Interval},
                              Channel = #channel{conninfo = ConnInfo, clientinfo = ClientInfo}) ->
     EI = timer:seconds(Interval),
-    OLdEI = maps:get(expiry_interval, ConnInfo, 0),
-    case OLdEI =:= EI of
+    OldEI = maps:get(expiry_interval, ConnInfo, 0),
+    case OldEI =:= EI of
         true -> Channel;
         false ->
             NChannel = Channel#channel{conninfo = ConnInfo#{expiry_interval => EI}},
             ClientID = maps:get(clientid, ClientInfo, undefined),
             %% Check if the client turns on/off persistence
             if
-                EI =:= 0, OLdEI >   0 ->
+                EI =:= 0, OldEI >   0 ->
                     emqx_session:discard_persistent(ClientID, NChannel#channel.session);
-                EI > 0,   OLdEI =:= 0 ->
+                EI > 0,   OldEI =:= 0 ->
                     emqx_session:enable_persistent(ClientID, NChannel#channel.session);
                 true ->
                     skip
